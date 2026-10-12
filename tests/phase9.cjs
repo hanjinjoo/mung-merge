@@ -1,0 +1,48 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({channel:process.env.QA_BROWSER||'chrome',headless:true,args:['--autoplay-policy=document-user-activation-required']});
+ const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});const page=await context.newPage();page.setDefaultTimeout(12000);
+ const errors=[],checks=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+ const ready=async()=>{await page.waitForFunction(()=>window.__game?.scene.getScene('Game').objects);await page.evaluate(()=>__game.scene.getScene('Game').audioSystem.preloadPromise);};
+ const audio=()=>page.evaluate(()=>{const a=__game.scene.getScene('Game').audioSystem;return {counts:{...a.counts},...a.status(),guard:a.gameOverSoundPlayed,pending:a.pending.size};});
+ const reset=async()=>{await page.evaluate(()=>window.previousSpawn=__game.scene.getScene('Game').spawn);await page.locator('#reset').tap();await page.waitForFunction(()=>{const s=__game.scene.getScene('Game');return s.spawn!==window.previousSpawn&&s.objects.size===0&&!s.gameOver;});};
+ await page.goto('http://localhost:5173/?test=1');await ready();
+ assert.equal((await audio()).downloaded,6);assert.equal((await audio()).context,'입력 대기');assert.equal((await audio()).unlocks,0);checks.push('입력 전 오디오 컨텍스트 생성·자동재생 없음, MP3 6개 preload');
+ await page.keyboard.press('Space');await page.waitForFunction(()=>__game.scene.getScene('Game').audioSystem.counts.drop===1);assert.equal((await audio()).unlocks,1);
+ await page.keyboard.press('Space');assert.equal((await audio()).counts.drop,1);checks.push('QA1·2·16: 첫 키 입력 unlock 및 drop1회, 연타 무효');
+ await page.waitForFunction(()=>__game.scene.getScene('Game').audioSystem.buffers.size===6);
+ const decoded=await page.evaluate(()=>[...__game.scene.getScene('Game').audioSystem.buffers].map(([name,b])=>({name,duration:b.duration,energy:b.getChannelData(0).reduce((a,v)=>a+v*v,0)})));
+ assert.ok(decoded.every(s=>s.duration>0&&s.duration<.7&&s.energy>0));checks.push('MP3 6개 WebAudio 디코딩 성공·무음 아닌 짧은 파형 확인');
+ await reset();
+ const collisions=await page.evaluate(()=>{const a=__game.scene.getScene('Game').audioSystem;const initial=a.counts.collision;const first=a.playCollision(2,'a:b',1000);const strong=a.playCollision(5,'a:b',1000);a.stopAll();const global=a.playCollision(5,'c:d',1119);const pair=a.playCollision(5,'a:b',1250);const next=a.playCollision(5,'c:d',1120);a.stopAll();const repeat=a.playCollision(5,'a:b',1300);return {first,strong,global,pair,next,repeat,delta:a.counts.collision-initial};});
+ assert.deepEqual(collisions,{first:false,strong:true,global:false,pair:false,next:true,repeat:true,delta:3});checks.push('QA3·4: 약한 충돌 무음·전체120ms·같은쌍300ms 쿨다운');
+ await reset();const impactBefore=(await audio()).counts.collision;await page.evaluate(()=>{const s=__game.scene.getScene('Game'),o=s.createCharacter(3,200,450,-200);s.matter.body.setVelocity(o.body,{x:0,y:8});});await page.waitForFunction(n=>__game.scene.getScene('Game').audioSystem.counts.collision>n,impactBefore);checks.push('실제 Matter 바닥 충돌에서 collision 음원 재생 연결 확인');
+ await reset();
+ for(const [source,sound] of [[1,'merge'],[5,'big_merge'],[6,'big_merge'],[7,'final']]){
+  const before=(await audio()).counts[sound];
+  await page.evaluate(source=>{const s=__game.scene.getScene('Game');const a=s.createCharacter(source,180,450,-200),b=s.createCharacter(source,181,450,-200);s.merge.reserve(a,b,s.simTime);s.merge.reserve(b,a,s.simTime);},source);
+  await page.waitForFunction(({sound,before})=>__game.scene.getScene('Game').audioSystem.counts[sound]===before+1,{sound,before});await page.waitForTimeout(100);assert.equal((await audio()).counts[sound],before+1);await reset();
+ }checks.push('QA5·6·7: 성공 합체당 일반/고단계/최종음1회·중복 reserve 무시');
+ const beforeOver=(await audio()).counts.gameover;
+ await page.evaluate(()=>{const s=__game.scene.getScene('Game');s.finishGame();s.finishGame();s.audioSystem.playGameOver();});await page.waitForTimeout(5100);assert.equal((await audio()).counts.gameover,beforeOver+1);assert.equal((await audio()).active,0);checks.push('QA8·9: 게임오버1회 재생·5초 뒤 반복 없음');
+ await page.locator('#result-reset').tap();await page.waitForFunction(()=>!__game.scene.getScene('Game').gameOver);
+ await page.evaluate(()=>__game.scene.getScene('Game').audioSystem.playFinal());assert.ok((await audio()).active>0);
+ await page.locator('#sound-toggle').tap();assert.equal((await audio()).soundEnabled,false);assert.equal((await audio()).active,0);const mutedBefore=(await audio()).counts;
+ await page.evaluate(()=>{const a=__game.scene.getScene('Game').audioSystem;a.playDrop();a.playCollision(5,'x:y',9999);a.playMerge(2);a.playMerge(6);a.playFinal();});assert.deepEqual((await audio()).counts,mutedBefore);assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').objects.size),0);checks.push('QA10·13: OFF 즉시 현재 음 중단·이후 무음·토글 터치 드롭 없음');
+ await page.reload();await ready();assert.equal((await audio()).soundEnabled,false);assert.equal(await page.evaluate(()=>localStorage.getItem('soundEnabled')),'false');checks.push('QA11: 새로고침 후 soundEnabled=false 유지');
+ await page.locator('#sound-toggle').tap();await page.waitForFunction(()=>__game.scene.getScene('Game').audioSystem.buffers.size===6);await page.locator('canvas').tap({position:{x:170,y:220}});await page.waitForFunction(()=>__game.scene.getScene('Game').audioSystem.counts.drop===1);checks.push('QA12: 다시 ON 전환 후 재생 복구');
+ await reset();await page.evaluate(()=>{window.originalAudio=__game.scene.getScene('Game').audioSystem;window.originalContext=originalAudio.context;});const initialDrops=(await audio()).counts.drop;
+ for(let i=0;i<20;i++){await reset();await page.keyboard.press('Space');await page.waitForFunction(n=>__game.scene.getScene('Game').audioSystem.counts.drop===n,initialDrops+i+1);assert.ok(await page.evaluate(()=>{const s=__game.scene.getScene('Game');return s.audioSystem===originalAudio&&s.audioSystem.context===originalContext&&s.objects.size===1;}));}
+ assert.equal((await audio()).unlocks,1);checks.push('QA14: 재시작20회, 동일 AudioSystem/Context, 매 드롭1회, 최초 unlock1회');
+ await reset();const paused=await page.evaluate(()=>{const a=__game.scene.getScene('Game').audioSystem;a.setPaused(true);const p=a.playDrop();a.setPaused(false);return [p,a.playDrop()];});assert.deepEqual(paused,[false,true]);checks.push('일시정지 중 새 음 금지·재개 후 정상');
+ const polyphony=await page.evaluate(()=>{const a=__game.scene.getScene('Game').audioSystem;for(let i=0;i<30;i++)a.playMerge(2);return a.active.size;});assert.ok(polyphony<=6);checks.push('동시 재생 최대6개로 제한');
+ await page.screenshot({path:'test-results/phase9-mobile.png'});
+ const missing=await context.newPage();missing.setDefaultTimeout(12000);missing.on('pageerror',e=>errors.push(e.message));await missing.route('**/assets/audio/merge.mp3',route=>route.fulfill({status:404,body:''}));await missing.route('**/assets/audio/collision.mp3',route=>route.fulfill({status:200,contentType:'audio/mpeg',body:'잘못된 파일'}));
+ await missing.goto('http://localhost:5173/?test=1');await missing.waitForFunction(()=>window.__game?.scene.getScene('Game').objects);await missing.evaluate(()=>__game.scene.getScene('Game').audioSystem.preloadPromise);await missing.keyboard.press('Space');await missing.waitForFunction(()=>__game.scene.getScene('Game').audioSystem.context?.state==='running');
+ await missing.evaluate(()=>{const s=__game.scene.getScene('Game');for(const o of [...s.objects.values()])s.removeCharacter(o);s.createCharacter(1,180,450,-200);s.createCharacter(1,181,450,-200);});await missing.waitForFunction(()=>__game.scene.getScene('Game').score.current===10);assert.equal(await missing.evaluate(()=>__game.scene.getScene('Game').audioSystem.counts.merge),0);checks.push('QA15: merge404·collision디코딩 실패에도 게임·합체·점수 정상');
+ const denied=await browser.newPage();denied.setDefaultTimeout(12000);denied.on('pageerror',e=>errors.push(e.message));await denied.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw Error('저장소 접근 거부');}}));await denied.goto('http://localhost:5173/?test=1');await denied.waitForFunction(()=>window.__game?.scene.getScene('Game').objects);await denied.locator('#sound-toggle').click();assert.equal(await denied.evaluate(()=>__game.scene.getScene('Game').audioSystem.enabled),false);checks.push('localStorage 접근 거부 시 토글·게임 정상');
+ assert.deepEqual(errors,[]);checks.push('정상 환경 콘솔·전체 런타임 오류0');
+ fs.mkdirSync('test-results',{recursive:true});fs.writeFileSync('test-results/phase9.json',JSON.stringify({checks,decoded,errors},null,2));console.log(JSON.stringify({checks,decoded,errors},null,2));await browser.close();
+})().catch(e=>{console.error(e);process.exit(1);});

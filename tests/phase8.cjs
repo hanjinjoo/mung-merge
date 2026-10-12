@@ -1,0 +1,56 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({channel:process.env.QA_BROWSER||'chrome',headless:true});
+ const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});page.setDefaultTimeout(12000);
+ const errors=[],checks=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+ await page.goto('http://localhost:5173/?test=1&debug=true');await page.waitForFunction(()=>window.__game?.scene.getScene('Game').effects);
+ const reset=async()=>{await page.locator('#reset').click();await page.waitForFunction(()=>{const s=__game.scene.getScene('Game');return s.objects.size===0&&s.score.current===0&&!s.gameOver;});};
+ assert.equal(await page.evaluate(()=>typeof debugSpawnStage),'function');
+ const begin=await page.evaluate(()=>{const s=__game.scene.getScene('Game');const a=debugSpawnStage(1,180,500),b=debugSpawnStage(1,211,500);s.simTime+=120;s.merge.reserve(a,b,s.simTime);s.merge.flush(s.simTime);window.oldPair=[a,b];return {locked:a.mergeLocked&&b.mergeLocked,count:s.objects.size,score:s.score.current,delay:s.merge.queue[0].readyAt-s.simTime};});
+ assert.deepEqual(begin,{locked:true,count:2,score:0,delay:60});
+ await page.waitForFunction(()=>{const s=__game.scene.getScene('Game');return s.objects.size===1&&s.score.current===10;});
+ const pop=await page.evaluate(()=>{const s=__game.scene.getScene('Game');const o=[...s.objects.values()][0];return {stage:o.stageId,scale:o.visual.sx,popups:[...s.effects.decorations].filter(e=>e.text==='+10').length};});
+ assert.equal(pop.stage,2);assert.ok(pop.scale>=.75&&pop.scale<=1.07);assert.equal(pop.popups,1);
+ assert.equal(await page.evaluate(()=>{const s=__game.scene.getScene('Game');return s.merge.reserve(...window.oldPair,s.simTime);}),false);
+ await page.waitForTimeout(700);assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').score.current),10);checks.push('60ms 잠금 수축 → 다음 단계 팝인, +10 한 번, 삭제된 충돌 무시');
+ assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').effects.decorations.size),0);checks.push('점수 팝업과 가벼운 효과 수명 종료 후 제거');
+ await reset();
+ const squash=await page.evaluate(()=>{const s=__game.scene.getScene('Game');const o=debugSpawnStage(4,200,450);window.squashItem=o;window.bodyBefore={area:o.body.area,r:o.body.circleRadius,vertices:o.body.vertices.map(v=>({x:v.x-o.body.position.x,y:v.y-o.body.position.y}))};s.effects.impact(o,2,s.simTime);const low=o.isAnimating;s.effects.impact(o,5,s.simTime);const tween=o.visualTween;s.effects.impact(o,6,s.simTime+1);return {low,sx:o.visual.sx,sy:o.visual.sy,same:tween===o.visualTween};});
+ assert.deepEqual(squash,{low:false,sx:1.06,sy:.94,same:true});
+ await page.waitForTimeout(180);
+ assert.ok(await page.evaluate(()=>{const o=window.squashItem;return o.body.area===bodyBefore.area&&o.body.circleRadius===bodyBefore.r&&Math.abs(o.visual.sx-1)<.001&&Math.abs(o.visual.sy-1)<.001;}));checks.push('6% squash·임계값·중복 억제·원래 크기 복귀, 물리 면적/반지름 불변');
+ await reset();await page.evaluate(()=>{const s=__game.scene.getScene('Game');window.falling=s.createCharacter(3,200,430,-200);s.matter.body.setVelocity(falling.body,{x:0,y:8});});
+ await page.waitForFunction(()=>Number.isFinite(window.falling.lastSquashTime));assert.equal(await page.evaluate(()=>falling.body.circleRadius),30);checks.push('실제 Matter 바닥 충돌에서 강한 충돌 squash 실행');
+ // 생성 보호 이후 겹친 stage2도 합체를 이어간다.
+ await reset();await page.evaluate(()=>{const s=__game.scene.getScene('Game');s.matter.world.setGravity(0,0);s.createCharacter(1,170,430,-200);s.createCharacter(1,205,430,-200);});
+ await page.waitForFunction(()=>[...__game.scene.getScene('Game').objects.values()].some(o=>o.stageId===2));
+ await page.evaluate(()=>{const s=__game.scene.getScene('Game'),o=[...s.objects.values()][0];s.createCharacter(2,o.body.position.x+49,o.body.position.y,s.simTime-200);});
+ await page.waitForFunction(()=>{const s=__game.scene.getScene('Game');return [...s.objects.values()].some(o=>o.stageId===3);});assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').score.current),34);checks.push('생성 100ms 보호 후 stage1→2→3 연쇄 합체·콤보 누적34점');
+ for(const x of [17,402]){await reset();const state=await page.evaluate(x=>{const s=__game.scene.getScene('Game');const a=s.createCharacter(7,x,577,-200),b=s.createCharacter(7,x,577,-200);s.merge.reserve(a,b,s.simTime);s.merge.flush(s.simTime);s.merge.flush(s.simTime+60);const o=[...s.objects.values()][0];return {x:o.body.position.x,y:o.body.position.y,r:o.body.circleRadius};},x);assert.ok(state.x>=89&&state.x<=331&&state.y<=505);}checks.push('벽·바닥 근처 지연 합체 생성 좌표 clamp');
+ for(const source of [4,5,6,7]){await reset();const state=await page.evaluate(source=>{const s=__game.scene.getScene('Game');const a=s.createCharacter(source,180,450,-200),b=s.createCharacter(source,181,450,-200);s.merge.reserve(a,b,s.simTime);s.merge.flush(s.simTime);s.merge.flush(s.simTime+60);return {shake:s.cameras.main.shakeEffect.isRunning,stage:[...s.objects.values()][0].stageId};},source);assert.equal(state.shake,source>=5);}checks.push('생성 stage6·7 흔들림 유지, stage8은 PHASE11 특별 흔들림');
+ await reset();const zero=await page.evaluate(()=>{const s=__game.scene.getScene('Game');const a=s.createCharacter(1,180,450,-200),b=s.createCharacter(1,181,450,-200);s.merge.reserve(a,b,s.simTime);s.merge.flush(s.simTime);s.finishGame();return {t:s.effects.tweens.size,e:s.effects.decorations.size,q:s.merge.queue.length,score:s.score.current};});assert.deepEqual(zero,{t:0,e:0,q:0,score:0});
+ await page.waitForTimeout(300);assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').score.current),0);checks.push('합체 대기 중 게임오버: tween·예약 제거, 지연 점수 지급 없음');
+ await page.locator('#result-reset').click();await page.waitForFunction(()=>!__game.scene.getScene('Game').gameOver);
+ await page.evaluate(()=>{const s=__game.scene.getScene('Game');const a=s.createCharacter(1,180,450,-200),b=s.createCharacter(1,181,450,-200);s.merge.reserve(a,b,s.simTime);s.merge.flush(s.simTime);s.merge.flush(s.simTime+60);window.oldEffects=s.effects;window.oldVisuals=[...s.effects.decorations];});
+ await reset();assert.ok(await page.evaluate(()=>oldEffects.tweens.size===0&&oldEffects.decorations.size===0&&oldVisuals.every(o=>!o.scene)));checks.push('재시작 시 이전 tween·팝업·장식 오브젝트 제거');
+ await page.evaluate(()=>{const s=__game.scene.getScene('Game');s.effects.scorePopup=()=>{throw Error('표시 실패 검사');};s.createCharacter(1,180,450,-200);s.createCharacter(1,181,450,-200);});
+ await page.waitForFunction(()=>__game.scene.getScene('Game').score.current===10);assert.equal(await page.evaluate(()=>__game.scene.getScene('Game').merge.presentationFailures),1);checks.push('점수 팝업 실패 주입에도 실제 점수10·합체 정상');
+ await page.evaluate(()=>__game.scene.getScene('Game').finishGame());await page.waitForTimeout(100);assert.deepEqual(await page.evaluate(()=>{const s=__game.scene.getScene('Game');return [s.effects.tweens.size,s.effects.decorations.size,s.tweens.getTweens().length];}),[0,0,0]);checks.push('팝인·이펙트 진행 중 게임오버 후 Phaser tween까지 잔존0');
+ await page.locator('#result-reset').click();await page.waitForFunction(()=>!__game.scene.getScene('Game').gameOver);
+ const fpsSample=async(stress)=>page.evaluate(async stress=>{
+  const s=__game.scene.getScene('Game');s.matter.world.setGravity(0,0);const intervals=[];let last=performance.now(),start=last;
+  let spawned=false;
+  await new Promise(resolve=>{function tick(now){intervals.push(now-last);last=now;if(stress&&!spawned){spawned=true;for(let row=0;row<4;row++)for(let col=0;col<4;col++){const x=65+95*col,y=240+80*row;s.createCharacter(1,x-15,y,-200);s.createCharacter(1,x+15,y,-200);}}if(now-start<1600)requestAnimationFrame(tick);else resolve();}requestAnimationFrame(tick);});
+  const useful=intervals.filter(v=>v>0);return {fps:1000/(useful.reduce((a,b)=>a+b,0)/useful.length),p95:useful.sort((a,b)=>a-b)[Math.floor(useful.length*.95)],count:s.objects.size,score:s.score.current,effects:s.effects.decorations.size,tweens:s.effects.tweens.size,peakEffects:s.effects.peakDecorations,peakTweens:s.effects.peakTweens,failures:s.merge.presentationFailures};
+ },stress);
+ const idle=await fpsSample(false);const busy=await fpsSample(true);
+ assert.equal(busy.count,16);assert.equal(busy.score,357);assert.equal(busy.effects,0);assert.equal(busy.tweens,0);assert.equal(busy.failures,0);assert.ok(busy.peakEffects<=48);assert.ok(busy.peakTweens<=128);assert.ok(busy.fps>=30&&busy.fps>=idle.fps*.7,JSON.stringify({idle,busy}));checks.push('16쌍 동시 합체 콤보357점·효과 상한48·효과 정리·모바일 에뮬레이션 FPS 검사');
+ // 합체 장면을 재현하여 렌더링을 확인한다.
+ await reset();await page.evaluate(()=>{const s=__game.scene.getScene('Game');for(const [id,x] of [[2,80],[4,205],[6,320]]){const a=s.createCharacter(id,x-10,450,-200),b=s.createCharacter(id,x+10,450,-200);s.merge.reserve(a,b,s.simTime);}s.merge.flush(s.simTime);s.merge.flush(s.simTime+60);});
+ fs.mkdirSync('test-results',{recursive:true});await page.screenshot({path:'test-results/phase8-effects.png'});
+ await page.goto('http://localhost:5173/?test=1');await page.waitForFunction(()=>window.__game?.scene.getScene('Game').effects);assert.equal(await page.evaluate(()=>typeof window.debugSpawnStage),'undefined');checks.push('debugSpawnStage는 debug=true에서만 노출');
+ assert.deepEqual(errors,[]);checks.push('브라우저 런타임·콘솔 오류0');
+ fs.writeFileSync('test-results/phase8.json',JSON.stringify({checks,idle,busy,errors},null,2));console.log(JSON.stringify({checks,idle,busy,errors},null,2));await browser.close();
+})().catch(e=>{console.error(e);process.exit(1);});

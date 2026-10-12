@@ -1,0 +1,42 @@
+[
+  {
+    "stage": 1,
+    "original": "KakaoTalk_20261007_140820815_06.jpg",
+    "output": "stage1.png"
+  },
+  {
+    "stage": 2,
+    "original": "KakaoTalk_20261007_140820815_01.jpg",
+    "output": "stage2.png"
+  },
+  {
+    "stage": 3,
+    "original": "KakaoTalk_20261007_140820815_05.jpg",
+    "output": "stage3.png"
+  },
+  {
+    "stage": 4,
+    "original": "KakaoTalk_20261007_140820815_03.jpg",
+    "output": "stage4.png"
+  },
+  {
+    "stage": 5,
+    "original": "KakaoTalk_20261007_140820815_02.jpg",
+    "output": "stage5.png"
+  },
+  {
+    "stage": 6,
+    "original": "KakaoTalk_20261007_140820815_04.jpg",
+    "output": "stage6.png"
+  },
+  {
+    "stage": 7,
+    "original": "KakaoTalk_20261007_140820815.jpg",
+    "output": "stage7.png"
+  },
+  {
+    "stage": 8,
+    "original": "KakaoTalk_20261007_150850774.jpg",
+    "output": "stage8.png"
+  }
+]

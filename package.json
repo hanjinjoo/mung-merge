@@ -1,0 +1,25 @@
+{
+  "name": "mung-merge",
+  "version": "0.11.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.js",
+    "test:browser": "node tests/browser.cjs",
+    "test:phases": "node tests/phases5-7.cjs",
+    "test:effects": "node tests/phase8.cjs",
+    "test:audio": "node tests/phase9.cjs",
+    "test:combo": "node tests/phase10.cjs",
+    "test:final": "node tests/phase11.cjs"
+  },
+  "dependencies": {
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "vite": "6.4.1"
+  }
+}
